@@ -1,0 +1,133 @@
+import tensorflow as tf
+import numpy as np
+import tensorflow.examples.tutorials.mnist.input_data as input_data
+import matplotlib.pyplot as plt
+
+mnist = input_data.read_data_sets("MNIST_data", one_hot=True)
+
+
+class Constant:
+    batch_size = 100
+    steps = 28
+    inputs = 28
+    in_channels = 1
+    encode_layout = 128
+    decode_layout = 10
+
+
+class CnnEncoder:
+    def __init__(self):
+        self.conv1_in_channel = 1  # 输入通道数
+        self.conv1_out_channel = 16  # 输出通道数
+        self.conv1_f = 3  # 卷积核大小
+        self.conv1_w = tf.Variable(
+            tf.truncated_normal([3, 3, self.conv1_in_channel, self.conv1_out_channel]))  # 卷积核
+        self.conv1_b = tf.Variable(tf.zeros([self.conv1_out_channel]) + 0.1)  # 偏值
+
+        self.conv2_out_channel = 32
+        self.conv2_f = 3  # 卷积核大小
+        self.conv2_w = tf.Variable(
+            tf.truncated_normal([3, 3, self.conv1_out_channel, self.conv2_out_channel]))
+        self.conv2_b = tf.Variable(tf.zeros(self.conv2_out_channel) + 0.1)
+
+        self.w1 = tf.Variable(tf.truncated_normal([7 * 7 * 32, Constant.encode_layout]))  # [7*7*32,128]
+        self.b1 = tf.Variable(tf.zeros([Constant.encode_layout]) + 0.1)
+
+    def encode(self, x):
+        x = tf.reshape(x, [-1, 28, 28, 1])
+        self.conv1 = tf.nn.relu(tf.nn.conv2d(x, self.conv1_w, strides=[1, 1, 1, 1], padding="SAME") + self.conv1_b)
+        self.pool1 = tf.nn.max_pool(self.conv1, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding="SAME")
+
+        self.conv2 = tf.nn.relu(
+            tf.nn.conv2d(self.pool1, self.conv2_w, strides=[1, 1, 1, 1], padding="SAME") + self.conv2_b)
+        self.pool2 = tf.nn.max_pool(self.conv2, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding="SAME")
+
+        flat = tf.reshape(self.pool2, [-1, 7 * 7 * 32])
+        self.output = tf.nn.relu(tf.matmul(flat, self.w1) + self.b1)
+        return self.output
+
+
+class RnnEncoder:
+
+    def __init__(self):
+        self.layer1_out = Constant.encode_layout
+        self.layer1_w = tf.Variable(tf.truncated_normal([Constant.inputs, self.layer1_out]))
+        self.layer1_b = tf.Variable(tf.zeros([self.layer1_out]) + 0.1)
+
+    def encode(self, x):
+        y = tf.reshape(x, [-1, Constant.inputs])
+        y = tf.nn.relu(tf.matmul(y, self.layer1_w) + self.layer1_b)
+        y = tf.reshape(y, [-1, Constant.steps, self.layer1_out])
+
+        with tf.variable_scope('encode'):
+            cell = tf.contrib.rnn.BasicLSTMCell(self.layer1_out)
+            init_state = cell.zero_state(Constant.batch_size, dtype=tf.float32)
+            outputs, final_state = tf.nn.dynamic_rnn(cell, y, initial_state=init_state, time_major=False)
+            return outputs[:, -1, :]
+
+
+class RnnDecoder:
+
+    def __init__(self):
+        self.layer1_out = Constant.decode_layout
+        self.layer1_w = tf.Variable(tf.truncated_normal([Constant.encode_layout, self.layer1_out]))
+        self.layer1_b = tf.Variable(tf.zeros([self.layer1_out])) + 0.1
+
+    def decode(self, x):
+        x = tf.expand_dims(x, axis=1)
+        x = tf.tile(x, [1, 1, 1])
+        with tf.variable_scope('decode'):
+            cell = tf.contrib.rnn.BasicLSTMCell(Constant.encode_layout)
+            init_state = cell.zero_state(Constant.batch_size, dtype=tf.float32)
+            outputs, final_state = tf.nn.dynamic_rnn(cell, x, initial_state=init_state, time_major=False)
+            y = outputs
+            y = tf.reshape(y, [-1, Constant.encode_layout])
+            y = tf.nn.softmax(tf.matmul(y, self.layer1_w) + self.layer1_b)
+            return y
+
+
+class Net:
+    def __init__(self):
+        self.x = tf.placeholder(dtype=tf.float32, shape=[None, 784])
+        self.y = tf.placeholder(dtype=tf.float32, shape=[None, 10])
+
+        self.encoder = RnnEncoder() #seq2seq
+        # self.encoder = CnnEncoder()  # cnn2seq
+        self.decoder = RnnDecoder()
+
+    def forward(self):
+        y = self.encoder.encode(self.x)
+        y_pre = self.decoder.decode(y)
+        self.output = y_pre
+
+    def backward(self):
+        self.loss = tf.nn.softmax_cross_entropy_with_logits(labels=self.y, logits=self.output)
+        self.optimizer = tf.train.AdamOptimizer().minimize(self.loss)
+        a = tf.equal(tf.argmax(self.output, 1), tf.argmax(self.y, 1))
+        a = tf.cast(a, tf.float32)
+        self.accuracy = tf.reduce_mean(a)
+
+
+if __name__ == '__main__':
+    net = Net()
+    net.forward()
+    net.backward()
+
+    init = tf.global_variables_initializer()
+
+    with tf.Session() as sess:
+        sess.run(init)
+        for i in range(10000):
+            xs, ys = mnist.train.next_batch(Constant.batch_size)
+            loss, _, accuracy = sess.run([net.optimizer, net.loss, net.accuracy], feed_dict={net.x: xs, net.y: ys})
+            if i % 100 == 0:
+                print(accuracy)
+
+        # batch = 10
+        # y_pre, _ = sess.run(
+        #     [net.output,net.optimizer], feed_dict={net.x: mnist.test.images[:batch], net.y: mnist.test.labels[:batch]})
+        # f, a = plt.subplots(2, 10, figsize=(10, 2))
+        # for i in range(batch):
+        #     a[0][i].imshow(np.reshape(mnist.test.images[i], (28, 28)))
+        #     a[1][i].imshow(np.reshape(y_pre[i], (28, 28)))
+        # plt.show()

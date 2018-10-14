@@ -1,0 +1,104 @@
+import tensorflow as tf
+import tensorflow.examples.tutorials.mnist.input_data as input_data
+import numpy as np
+import matplotlib.pyplot as plt
+
+mnist = input_data.read_data_sets("MNIST_data/", one_hot=True)
+
+
+class DNet:
+
+    def __init__(self):
+        with tf.variable_scope("D_PARAM"):
+            self.in_w = tf.Variable(tf.truncated_normal(shape=[784, 512], stddev=0.01))
+            self.in_b = tf.Variable(tf.zeros([512]))
+
+            self.in_w2 = tf.Variable(tf.truncated_normal(shape=[512, 256], stddev=0.01))
+            self.in_b2 = tf.Variable(tf.zeros([256]))
+
+            self.out_w = tf.Variable(tf.truncated_normal(shape=[256, 1], stddev=0.01))
+
+    def forward(self,x):
+        y = tf.nn.leaky_relu(tf.matmul(x, self.in_w) + self.in_b)
+        y = tf.nn.leaky_relu(tf.matmul(y, self.in_w2) + self.in_b2)
+        return tf.matmul(y, self.out_w)
+
+    def getParam(self):
+        return tf.get_collection(tf.GraphKeys.VARIABLES,scope="D_PARAM")
+
+
+class GNet:
+    def __init__(self):
+        with tf.variable_scope("G_PARAM"):
+            self.in_w = tf.Variable(tf.truncated_normal(shape=[128, 256], stddev=0.01))
+            self.in_b = tf.Variable(tf.zeros([256]))
+
+            self.in_w2 = tf.Variable(tf.truncated_normal(shape=[256, 512], stddev=0.01))
+            self.in_b2 = tf.Variable(tf.zeros([512]))
+
+            self.out_w = tf.Variable(tf.truncated_normal(shape=[512, 784], stddev=0.01))
+
+    def forward(self, x):
+        y = tf.nn.leaky_relu(tf.matmul(x, self.in_w) + self.in_b)
+        y = tf.nn.leaky_relu(tf.matmul(y, self.in_w2) + self.in_b2)
+        return tf.matmul(y, self.out_w)
+
+    def getParam(self):
+        return tf.get_collection(tf.GraphKeys.VARIABLES,scope="G_PARAM")
+
+class Net:
+
+    def __init__(self):
+        self.real_x = tf.placeholder(dtype=tf.float32,shape=[None, 784])
+        self.feature_x = tf.placeholder(dtype=tf.float32,shape=[None, 128])
+
+        self.pos_y = tf.placeholder(dtype=tf.float32,shape=[None, 1])
+        self.nage_y = tf.placeholder(dtype=tf.float32,shape=[None, 1])
+
+        self.gnet = GNet()
+        self.dnet = DNet()
+
+        self.forward()
+        self.backward()
+
+    def forward(self):
+        self.real_d_out = self.dnet.forward(self.real_x)
+
+        self.feature_g_out = self.gnet.forward(self.feature_x)
+        self.g_d_out = self.dnet.forward(self.feature_g_out)
+
+    def backward(self):
+        real_loss = tf.reduce_mean((self.real_d_out - self.pos_y) ** 2)
+        g_d_loss = tf.reduce_mean((self.g_d_out - self.nage_y) ** 2)
+        self.d_loss = real_loss + g_d_loss
+        self.d_opt = tf.train.AdamOptimizer().minimize(self.d_loss,var_list=self.dnet.getParam())
+
+        self.g_loss = tf.reduce_mean((self.g_d_out - self.pos_y) ** 2)
+        self.g_opt = tf.train.AdamOptimizer().minimize(self.g_loss, var_list=self.gnet.getParam())
+
+if __name__ == '__main__':
+    net = Net()
+    init = tf.global_variables_initializer()
+
+    with tf.Session() as sess:
+        sess.run(init)
+
+        for epoch in range(10000000):
+            real_xs,_ = mnist.train.next_batch(100)
+            pos_ys =  np.ones(shape=[100,1])
+
+            feature_xs = np.random.uniform(0,1,size=[100,128])
+            nage_ys = np.zeros(shape=[100,1])
+
+            _d_loss,_ = sess.run([net.d_loss,net.d_opt],feed_dict={net.real_x:real_xs,net.pos_y:pos_ys,net.feature_x:feature_xs,net.nage_y:nage_ys})
+
+            _g_loss,_ = sess.run([net.g_loss,net.g_opt],feed_dict={net.feature_x:feature_xs,net.pos_y:pos_ys})
+
+            plt.ion()
+            if epoch%100 ==0:
+                test_feature_xs = np.random.uniform(0, 1, size=[1, 128])
+                test_img_data = sess.run([net.feature_g_out],feed_dict={net.feature_x:test_feature_xs})
+                test_img = np.reshape(test_img_data, [28, 28])
+                plt.imshow(test_img)
+                plt.pause(0.1)
+

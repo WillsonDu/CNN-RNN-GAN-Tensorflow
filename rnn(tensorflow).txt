@@ -1,0 +1,103 @@
+import tensorflow as tf
+import tensorflow.examples.tutorials.mnist.input_data as input_data
+
+mnist = input_data.read_data_sets("MNIST_data", one_hot=True)
+
+steps = 28
+inputs = 28
+n_hidden = 128
+batch_size = 100
+in_channel = 1
+
+
+class RnnNet:
+
+    def __init__(self):
+        self.x = tf.placeholder(shape=[None, steps, inputs, in_channel], dtype=tf.float32)
+        self.y = tf.placeholder(shape=[None, 10], dtype=tf.float32)
+
+        # 计算出(列*通道数)
+        self.in_size = multi_rest(self.x.shape[-2:])
+
+        self.in_w = tf.Variable(tf.truncated_normal([self.in_size, n_hidden]))
+        self.in_b = tf.Variable(tf.zeros([n_hidden]))
+
+        self.out_w = tf.Variable(tf.truncated_normal([n_hidden, 10]))
+        self.out_b = tf.Variable(tf.zeros([10]))
+
+        # 给forward_1方法提供的权重和bias
+        self.w = tf.Variable(tf.truncated_normal([n_hidden, 10], stddev=0.1))
+        self.b = tf.Variable(tf.zeros([10]))
+
+        # 前向、后向计算
+        self.forward_1()
+        self.backward()
+
+    def forward(self):
+        x = tf.reshape(self.x, [-1, self.in_size])  # [batch*28,28*1]
+        x = tf.nn.leaky_relu(tf.matmul(x, self.in_w) + self.in_b)  # [batch*28,128]
+        x = tf.reshape(x, [-1, steps, n_hidden])  # [batch,28,128]
+        # 单向LSTM
+        lstm_cell = tf.contrib.rnn.BasicLSTMCell(n_hidden)
+        init_state = lstm_cell.zero_state(batch_size, dtype=tf.float32)
+        outputs, final_state = tf.nn.dynamic_rnn(lstm_cell, x, initial_state=init_state, time_major=False)
+        x = outputs[:, -1, :]  # [100,128]
+        self.output = tf.matmul(x, self.out_w) + self.out_b
+        return self.output
+
+    # 另外一种forward方式
+    def forward_1(self):
+        # # 单向LSTM(dynamic_rnn方法要求输入的x为tensor)
+        # x = tf.transpose(self.x, [1, 0, 2, 3])  # [28,batch,28,1]
+        # x = tf.reshape(x, [steps, -1, inputs * in_channel])  # [28,batch,28*1]
+        # # BasicLSTMCell方法的参数a是个超参数，可自己定义。其与前面的变量均无关，因为后面其结果会与self.w做乘法，这里只要求a的值等于self.w输入的第一个值即可
+        # lstm_cell = tf.contrib.rnn.BasicLSTMCell(n_hidden)
+        # init_state = lstm_cell.zero_state(batch_size, dtype=tf.float32)
+        # # 这里step处于第一个位置，切记把time_major设置成True
+        # outputs, states = tf.nn.dynamic_rnn(lstm_cell, x, initial_state=init_state, time_major=True)
+
+        #双向LSTM(static_bidirectional_rnn方法要求输入的x为序列(list,tuple,string等))
+        x = tf.transpose(self.x, [1, 0, 2, 3])
+        x = tf.reshape(x, [-1, inputs * in_channel])  # [28*batch,28*1]
+        x = tf.split(x, steps)  # 拆成list, 28个[batch,28*1]
+        lstm_qx = tf.contrib.rnn.BasicLSTMCell(n_hidden / 2, forget_bias=1.0)
+        lstm_hx = tf.contrib.rnn.BasicLSTMCell(n_hidden / 2, forget_bias=1.0)
+        outputs, _, _ = tf.contrib.rnn.static_bidirectional_rnn(lstm_qx, lstm_hx, x, dtype=tf.float32)
+
+        self.output = tf.matmul(outputs[-1], self.w) + self.b
+        return self.output
+
+    def backward(self):
+        self.loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=self.output, labels=self.y))
+        self.opt = tf.train.AdamOptimizer().minimize(self.loss)
+
+        self.correct_ = tf.cast(tf.equal(tf.argmax(self.output, 1), tf.argmax(self.y, 1)), tf.float32)
+        self.accuracy = tf.reduce_mean(self.correct_)
+
+
+def multi_rest(array):
+    try:
+        total = 1
+        for i in array:
+            total *= i
+
+        return int(total)
+    except:
+        raise Exception("Type Error")
+
+
+if __name__ == '__main__':
+    net = RnnNet()
+
+    init = tf.global_variables_initializer()
+    with tf.Session() as sess:
+        sess.run(init)
+
+        for i in range(100000):
+            xs, ys = mnist.train.next_batch(batch_size)
+            xs = xs.reshape([batch_size, 28, 28, 1])
+
+            accuracy, _ = sess.run([net.accuracy, net.opt], feed_dict={net.x: xs, net.y: ys})
+
+            if (i % 100 == 0):
+                print(accuracy)
